@@ -1024,4 +1024,128 @@ BN_LOAD_HEX(SECP_GX, "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16
 BN_LOAD_HEX(SECP_GY, "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8")
 BN_ZERO(SECP_GZ)
 LET BN(SECP_GZ * 16) = 1
+
+REM ===========================================================
+REM BIP-340 tagged hash and Schnorr sign.
+REM ===========================================================
+
+DIM TH_DATA(160)
+DIM TH_HASH(32)
+
+REM Compute SHA256(SHA256(tag) || SHA256(tag) || data) where data is TH_DATA(0..dataLen-1).
+REM Result is left in BUF(0..31).
+SUB TAGGED_HASH(tag$, dataLen)
+  LOCAL i, taglen
+  LET taglen = LEN(tag$)
+  REM Step 1: SHA256(tag) -> TH_HASH
+  FOR i = 0 TO taglen - 1
+    LET BUF(i) = ASC(MID$(tag$, i+1, 1))
+  NEXT i
+  SHA256_OF_BUF(taglen)
+  FOR i = 0 TO 31
+    LET TH_HASH(i) = BUF(i)
+  NEXT i
+  REM Step 2: SHA256(tagHash || tagHash || data)
+  FOR i = 0 TO 31
+    LET BUF(i) = TH_HASH(i)
+    LET BUF(32 + i) = TH_HASH(i)
+  NEXT i
+  FOR i = 0 TO dataLen - 1
+    LET BUF(64 + i) = TH_DATA(i)
+  NEXT i
+  SHA256_OF_BUF(64 + dataLen)
+  RETURN 0
+END SUB
+
+REM Schnorr sign per BIP-340.
+REM   rD: register containing 256-bit private key d (1 <= d < n).
+REM   rMsg: register containing the 32-byte message digest.
+REM   rAux: register containing 32-byte auxiliary randomness.
+REM   sigOff: BUF offset to write the 64-byte signature (R_x || s).
+SUB SCHNORR_SIGN(rD, rMsg, rAux, sigOff)
+  LOCAL i, dprime, P_X, P_Y, kn, R_X, R_Y, eReg, sReg
+  LET dprime = 10
+  LET P_X = 11
+  LET P_Y = 12
+  LET kn = 13
+  LET R_X = 14
+  LET R_Y = 15
+  LET eReg = 7
+  LET sReg = 8
+
+  REM 1) P = d * G
+  SCALAR_MULT_G_AFFINE(P_X, P_Y, rD)
+
+  REM 2) dprime = (n - d) if P.y is odd, else d
+  IF (BN(P_Y * 16) MOD 2) = 1 THEN
+    LET _ = BN_SUB(dprime, BN_R_N, rD)
+  ELSE
+    BN_COPY(dprime, rD)
+  ENDIF
+
+  REM 3) t = bytes(dprime) XOR taggedHash("BIP0340/aux", aux)
+  BN_STORE_BUF_BE(rAux, 0)
+  FOR i = 0 TO 31
+    LET TH_DATA(i) = BUF(i)
+  NEXT i
+  TAGGED_HASH("BIP0340/aux", 32)
+  REM Bytes(dprime) -> BUF(32..63), then TH_DATA(i) = BUF(i) XOR BUF(32+i) for i in 0..31
+  BN_STORE_BUF_BE(dprime, 32)
+  FOR i = 0 TO 31
+    LET TH_DATA(i) = BITXOR(BUF(i), BUF(32 + i))
+  NEXT i
+
+  REM 4) rand = taggedHash("BIP0340/nonce", t || P_x || m)
+  BN_STORE_BUF_BE(P_X, 0)
+  FOR i = 0 TO 31
+    LET TH_DATA(32 + i) = BUF(i)
+  NEXT i
+  BN_STORE_BUF_BE(rMsg, 0)
+  FOR i = 0 TO 31
+    LET TH_DATA(64 + i) = BUF(i)
+  NEXT i
+  TAGGED_HASH("BIP0340/nonce", 96)
+
+  REM 5) k' = int(rand) mod n
+  BN_LOAD_BUF_BE(kn, 0)
+  IF BN_CMP(kn, BN_R_N) >= 0 THEN
+    LET _ = BN_SUB(kn, kn, BN_R_N)
+  ENDIF
+
+  REM 7) R = k' * G
+  SCALAR_MULT_G_AFFINE(R_X, R_Y, kn)
+
+  REM 8) k = (n - k') if R.y is odd, else k'
+  IF (BN(R_Y * 16) MOD 2) = 1 THEN
+    LET _ = BN_SUB(kn, BN_R_N, kn)
+  ENDIF
+
+  REM 9) e = int(taggedHash("BIP0340/challenge", R_x || P_x || m)) mod n
+  BN_STORE_BUF_BE(R_X, 0)
+  FOR i = 0 TO 31
+    LET TH_DATA(i) = BUF(i)
+  NEXT i
+  BN_STORE_BUF_BE(P_X, 0)
+  FOR i = 0 TO 31
+    LET TH_DATA(32 + i) = BUF(i)
+  NEXT i
+  BN_STORE_BUF_BE(rMsg, 0)
+  FOR i = 0 TO 31
+    LET TH_DATA(64 + i) = BUF(i)
+  NEXT i
+  TAGGED_HASH("BIP0340/challenge", 96)
+  BN_LOAD_BUF_BE(eReg, 0)
+  IF BN_CMP(eReg, BN_R_N) >= 0 THEN
+    LET _ = BN_SUB(eReg, eReg, BN_R_N)
+  ENDIF
+
+  REM 10) s = (k + e * dprime) mod n
+  BN_MUL_MOD_N(sReg, eReg, dprime)
+  BN_ADD_MOD_N(sReg, sReg, kn)
+
+  REM Output R_x || s (32 + 32 bytes BE)
+  BN_STORE_BUF_BE(R_X, sigOff)
+  BN_STORE_BUF_BE(sReg, sigOff + 32)
+  RETURN 0
+END SUB
 `;
