@@ -1,11 +1,9 @@
-// Regression tests for the v0.1.x feature surface — ensure interpreter extensions
-// did not break the language or the JS-side nostr builtins.
+// Regression tests for v0.1.x language features (no nostr-specific assertions —
+// those moved into phase7-nostr.test.mjs once NOSTR_NSEC$ / NOSTR_SIGN$ became
+// pure BASIC SUBs).
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runBasic } from "./helpers.mjs";
-import { nostrBuiltins } from "../build/yabasic/index.js";
-import { generateSecretKey, finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure";
-import { nsecEncode } from "nostr-tools/nip19";
 
 test("PRINT, arithmetic, string concat", async () => {
   const out = await runBasic(`PRINT 1+2*3\nPRINT "hello"\n`);
@@ -38,41 +36,4 @@ test("INPUT prompt prints to output", async () => {
     { stdin: ["alice"] }
   );
   assert.equal(out, "name> hi, alice\n");
-});
-
-test("NOSTR_SIGN$ produces a verifiable event with matching pubkey", async () => {
-  const sk = generateSecretKey();
-  const nsec = nsecEncode(sk);
-  const expectedPub = getPublicKey(sk);
-  const out = await runBasic(
-    `INPUT "n> ", n$\nINPUT "m> ", m$\nPRINT NOSTR_SIGN$(n$, m$)\n`,
-    { stdin: [nsec, "hello world"], builtins: nostrBuiltins }
-  );
-  const evt = JSON.parse(out.slice(out.indexOf("{")));
-  assert.equal(evt.kind, 1);
-  assert.equal(evt.content, "hello world");
-  assert.equal(evt.pubkey, expectedPub);
-  assert.ok(verifyEvent(evt), "schnorr verifyEvent failed");
-});
-
-test("NOSTR_SIGN$ kind argument and re-finalized id parity", async () => {
-  const sk = generateSecretKey();
-  const nsec = nsecEncode(sk);
-  const out = await runBasic(
-    `PRINT NOSTR_SIGN$("${nsec}", "long form", 30023)\n`,
-    { builtins: nostrBuiltins }
-  );
-  const evt = JSON.parse(out.slice(out.indexOf("{")));
-  assert.equal(evt.kind, 30023);
-  assert.ok(verifyEvent(evt));
-  const reEvt = finalizeEvent(
-    { kind: evt.kind, created_at: evt.created_at, tags: evt.tags, content: evt.content },
-    sk
-  );
-  assert.equal(reEvt.id, evt.id);
-});
-
-test("NOSTR_NSEC$ returns a parseable nsec", async () => {
-  const out = await runBasic(`PRINT NOSTR_NSEC$()\n`, { builtins: nostrBuiltins });
-  assert.match(out.trim(), /^nsec1[023456789acdefghjklmnpqrstuvwxyz]+$/);
 });

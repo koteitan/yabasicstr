@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { run, RuntimeError, nostrBuiltins, LexError, ParseError } from "./yabasic";
+import { run, RuntimeError, LexError, ParseError } from "./yabasic";
 import { sampleCode } from "./sample";
 
 const DEFAULT_RELAY = "wss://relay.damus.io";
@@ -90,7 +90,6 @@ export default function App() {
             return inputLines[inputIdx++];
           },
         },
-        builtins: nostrBuiltins,
       });
       flush();
     } catch (e) {

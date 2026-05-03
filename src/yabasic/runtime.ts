@@ -456,4 +456,7 @@ export const defaultBuiltins: Builtins = {
 
   // Random byte 0..255 from a CSPRNG.
   RAND_BYTE: () => getCryptoBytes(1)[0],
+
+  // Current Unix timestamp in seconds (used by NOSTR_SIGN$).
+  NOW_UNIX: () => Math.floor(Date.now() / 1000),
 };

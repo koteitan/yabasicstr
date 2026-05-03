@@ -1148,4 +1148,126 @@ SUB SCHNORR_SIGN(rD, rMsg, rAux, sigOff)
   BN_STORE_BUF_BE(sReg, sigOff + 32)
   RETURN 0
 END SUB
+
+REM ===========================================================
+REM nostr-level helpers: NOSTR_PUBKEY_HEX$, NOSTR_NSEC$, NOSTR_SIGN$.
+REM Implemented entirely in BASIC on top of the primitives above.
+REM ===========================================================
+
+LET JSON_QUOTE$ = CHR$(34)
+LET JSON_BSLASH$ = CHR$(92)
+
+REM Escape a string for use as JSON string content (no surrounding quotes).
+REM Handles ", \\, control chars (\\n, \\r, \\t, \\b, \\f, and \\u00XX for other ctrls).
+SUB JSON_ESCAPE$(s$)
+  LOCAL out$, i, n, c$, code, hi, lo
+  LET out$ = ""
+  LET n = LEN(s$)
+  FOR i = 1 TO n
+    LET c$ = MID$(s$, i, 1)
+    LET code = ASC(c$)
+    IF code = 34 THEN
+      LET out$ = out$ + JSON_BSLASH$ + JSON_QUOTE$
+    ELSE
+      IF code = 92 THEN
+        LET out$ = out$ + JSON_BSLASH$ + JSON_BSLASH$
+      ELSE
+        IF code = 10 THEN
+          LET out$ = out$ + JSON_BSLASH$ + "n"
+        ELSE
+          IF code = 13 THEN
+            LET out$ = out$ + JSON_BSLASH$ + "r"
+          ELSE
+            IF code = 9 THEN
+              LET out$ = out$ + JSON_BSLASH$ + "t"
+            ELSE
+              IF code = 8 THEN
+                LET out$ = out$ + JSON_BSLASH$ + "b"
+              ELSE
+                IF code = 12 THEN
+                  LET out$ = out$ + JSON_BSLASH$ + "f"
+                ELSE
+                  IF code < 32 THEN
+                    LET hi = INT(code / 16)
+                    LET lo = code MOD 16
+                    LET out$ = out$ + JSON_BSLASH$ + "u00" + MID$(HEX_DIGITS$, hi + 1, 1) + MID$(HEX_DIGITS$, lo + 1, 1)
+                  ELSE
+                    LET out$ = out$ + c$
+                  ENDIF
+                ENDIF
+              ENDIF
+            ENDIF
+          ENDIF
+        ENDIF
+      ENDIF
+    ENDIF
+  NEXT i
+  RETURN out$
+END SUB
+
+REM Compute the BIP-340 x-only public key hex (64 lower-case hex chars) from sk hex.
+SUB NOSTR_PUBKEY_HEX$(skhex$)
+  LOCAL d_reg, P_X, P_Y
+  LET d_reg = 0
+  LET P_X = 1
+  LET P_Y = 2
+  LET _ = BN_LOAD_HEX(d_reg, skhex$)
+  SCALAR_MULT_G_AFFINE(P_X, P_Y, d_reg)
+  RETURN BN_TO_HEX$(P_X)
+END SUB
+
+REM Generate a random 32-byte secret key and return it as a "nsec1..." bech32 string.
+SUB NOSTR_NSEC$()
+  LOCAL i
+  FOR i = 0 TO 31
+    LET BUF(i) = RAND_BYTE()
+  NEXT i
+  LET BUF_LEN = 32
+  RETURN BECH32_ENCODE$("nsec")
+END SUB
+
+REM Build and sign a kind-1 nostr event.
+REM Inputs: nsec$ (bech32), content$ (UTF-8 limited to ASCII for now), kind (numeric)
+REM Output: signed event JSON string.
+SUB NOSTR_SIGN_KIND$(nsec$, content$, kind)
+  LOCAL skhex$, pubkey$, ts, canonical$, idhex$, sighex$, evt$, esc$, i, d_reg, msg_reg, aux_reg
+  LET skhex$ = NSEC_DECODE$(nsec$)
+  IF skhex$ = "" THEN RETURN ""
+  LET pubkey$ = NOSTR_PUBKEY_HEX$(skhex$)
+  LET ts = NOW_UNIX()
+  LET esc$ = JSON_ESCAPE$(content$)
+  REM Canonical: [0,"<pubkey>",<ts>,<kind>,[],"<content>"]
+  LET canonical$ = "[0," + JSON_QUOTE$ + pubkey$ + JSON_QUOTE$ + "," + STR$(ts) + "," + STR$(kind) + ",[]," + JSON_QUOTE$ + esc$ + JSON_QUOTE$ + "]"
+  LET idhex$ = SHA256$(canonical$)
+
+  REM Load registers for signing
+  LET d_reg = 5
+  LET msg_reg = 6
+  LET aux_reg = 9
+  LET _ = BN_LOAD_HEX(d_reg, skhex$)
+  LET _ = BN_LOAD_HEX(msg_reg, idhex$)
+  REM 32 random bytes -> aux register
+  FOR i = 0 TO 31
+    LET BUF(i) = RAND_BYTE()
+  NEXT i
+  LET _ = BN_LOAD_BUF_BE(aux_reg, 0)
+  SCHNORR_SIGN(d_reg, msg_reg, aux_reg, 0)
+  LET sighex$ = HEX_OF_BUF$(64)
+
+  REM Assemble final event JSON
+  LET evt$ = "{" + JSON_QUOTE$ + "id" + JSON_QUOTE$ + ":" + JSON_QUOTE$ + idhex$ + JSON_QUOTE$
+  LET evt$ = evt$ + "," + JSON_QUOTE$ + "pubkey" + JSON_QUOTE$ + ":" + JSON_QUOTE$ + pubkey$ + JSON_QUOTE$
+  LET evt$ = evt$ + "," + JSON_QUOTE$ + "created_at" + JSON_QUOTE$ + ":" + STR$(ts)
+  LET evt$ = evt$ + "," + JSON_QUOTE$ + "kind" + JSON_QUOTE$ + ":" + STR$(kind)
+  LET evt$ = evt$ + "," + JSON_QUOTE$ + "tags" + JSON_QUOTE$ + ":[]"
+  LET evt$ = evt$ + "," + JSON_QUOTE$ + "content" + JSON_QUOTE$ + ":" + JSON_QUOTE$ + esc$ + JSON_QUOTE$
+  LET evt$ = evt$ + "," + JSON_QUOTE$ + "sig" + JSON_QUOTE$ + ":" + JSON_QUOTE$ + sighex$ + JSON_QUOTE$
+  LET evt$ = evt$ + "}"
+  RETURN evt$
+END SUB
+
+REM Two-arg form: defaults kind to 1 (text note).
+SUB NOSTR_SIGN$(nsec$, content$)
+  RETURN NOSTR_SIGN_KIND$(nsec$, content$, 1)
+END SUB
 `;

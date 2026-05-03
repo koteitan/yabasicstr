@@ -1,9 +1,9 @@
 {
   "name": "yabasicstr",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
-  "description": "yabasic-style BASIC interpreter on the web with built-in nostr signing",
+  "description": "yabasic-style BASIC interpreter on the web. nostr signing (NSEC bech32, SHA-256, secp256k1, BIP-340) is implemented in BASIC on top of bitwise primitives.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -14,15 +14,17 @@
   },
   "dependencies": {
     "i18next": "^23.15.1",
-    "nostr-tools": "^2.7.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-i18next": "^15.0.2"
   },
   "devDependencies": {
+    "@noble/curves": "^1.6.0",
+    "@noble/hashes": "^1.5.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
+    "nostr-tools": "^2.7.2",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
   }
