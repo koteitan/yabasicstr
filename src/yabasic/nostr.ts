@@ -1,5 +1,5 @@
-import { finalizeEvent, type EventTemplate } from "nostr-tools/pure";
-import { decode } from "nostr-tools/nip19";
+import { finalizeEvent, generateSecretKey, type EventTemplate } from "nostr-tools/pure";
+import { decode, nsecEncode } from "nostr-tools/nip19";
 import type { Builtins } from "./runtime";
 import { toNum, toStr, RuntimeError } from "./runtime";
 
@@ -43,4 +43,9 @@ export const nostrBuiltins: Builtins = {
     const kind = args.length >= 3 ? Math.floor(toNum(args[2])) : 1;
     return signEvent(nsec, content, kind);
   },
+  /**
+   * NOSTR_NSEC$()
+   * Returns a freshly-generated random nsec (bech32) string.
+   */
+  "NOSTR_NSEC$": () => nsecEncode(generateSecretKey()),
 };

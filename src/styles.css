@@ -118,6 +118,39 @@ h1 {
   white-space: pre-wrap;
 }
 
+.relay-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.relay-input {
+  flex: 1;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid #232838;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+}
+
+.send-log {
+  margin: 8px 0 0;
+  background: #11161f;
+  color: var(--muted);
+  border: 1px solid #232838;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .actions {
   display: flex;
   gap: 8px;

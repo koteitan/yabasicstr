@@ -25,12 +25,16 @@ npm run build    # tsc + vite build
 
 `nsec1...` 形式の秘密鍵と本文文字列から、署名済みの nostr イベント JSON 文字列を返します。`kind` 省略時は 1 (text note)。
 
+### `NOSTR_NSEC$()`
+
+ランダムな秘密鍵を生成し、bech32 (`nsec1...`) 形式で返します。テスト用に毎回違う鍵が必要な場面で使えます。
+
 例:
 
 ```basic
-INPUT "nsec> ", nsec$
-INPUT "content> ", content$
-LET signed$ = NOSTR_SIGN$(nsec$, content$)
+LET nsec$    = NOSTR_NSEC$()
+LET content$ = "hello world"
+LET signed$  = NOSTR_SIGN$(nsec$, content$, 1)
 PRINT signed$
 ```
 
