@@ -22,7 +22,7 @@ export const stdlib = `
 LET BECH32_CHARSET$ = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 LET HEX_DIGITS$ = "0123456789abcdef"
 
-DIM BUF(256)
+DIM BUF(2048)
 LET BUF_LEN = 0
 DIM BECH32_VALS(160)
 DIM BECH32_PM(200)
@@ -226,5 +226,189 @@ SUB NPUB_DECODE$(npub$)
   IF BECH32_HRP$ <> "npub" THEN RETURN ""
   IF BUF_LEN <> 32 THEN RETURN ""
   RETURN HEX_OF_BUF$(32)
+END SUB
+
+REM ===========================================================
+REM SHA-256 (FIPS 180-4) implemented in BASIC.
+REM Operates on the shared BUF byte buffer.
+REM ===========================================================
+
+DIM SHA_K(64)
+DIM SHA_H(8)
+DIM SHA_W(64)
+
+LET SHA_K(0)  = 1116352408
+LET SHA_K(1)  = 1899447441
+LET SHA_K(2)  = 3049323471
+LET SHA_K(3)  = 3921009573
+LET SHA_K(4)  = 961987163
+LET SHA_K(5)  = 1508970993
+LET SHA_K(6)  = 2453635748
+LET SHA_K(7)  = 2870763221
+LET SHA_K(8)  = 3624381080
+LET SHA_K(9)  = 310598401
+LET SHA_K(10) = 607225278
+LET SHA_K(11) = 1426881987
+LET SHA_K(12) = 1925078388
+LET SHA_K(13) = 2162078206
+LET SHA_K(14) = 2614888103
+LET SHA_K(15) = 3248222580
+LET SHA_K(16) = 3835390401
+LET SHA_K(17) = 4022224774
+LET SHA_K(18) = 264347078
+LET SHA_K(19) = 604807628
+LET SHA_K(20) = 770255983
+LET SHA_K(21) = 1249150122
+LET SHA_K(22) = 1555081692
+LET SHA_K(23) = 1996064986
+LET SHA_K(24) = 2554220882
+LET SHA_K(25) = 2821834349
+LET SHA_K(26) = 2952996808
+LET SHA_K(27) = 3210313671
+LET SHA_K(28) = 3336571891
+LET SHA_K(29) = 3584528711
+LET SHA_K(30) = 113926993
+LET SHA_K(31) = 338241895
+LET SHA_K(32) = 666307205
+LET SHA_K(33) = 773529912
+LET SHA_K(34) = 1294757372
+LET SHA_K(35) = 1396182291
+LET SHA_K(36) = 1695183700
+LET SHA_K(37) = 1986661051
+LET SHA_K(38) = 2177026350
+LET SHA_K(39) = 2456956037
+LET SHA_K(40) = 2730485921
+LET SHA_K(41) = 2820302411
+LET SHA_K(42) = 3259730800
+LET SHA_K(43) = 3345764771
+LET SHA_K(44) = 3516065817
+LET SHA_K(45) = 3600352804
+LET SHA_K(46) = 4094571909
+LET SHA_K(47) = 275423344
+LET SHA_K(48) = 430227734
+LET SHA_K(49) = 506948616
+LET SHA_K(50) = 659060556
+LET SHA_K(51) = 883997877
+LET SHA_K(52) = 958139571
+LET SHA_K(53) = 1322822218
+LET SHA_K(54) = 1537002063
+LET SHA_K(55) = 1747873779
+LET SHA_K(56) = 1955562222
+LET SHA_K(57) = 2024104815
+LET SHA_K(58) = 2227730452
+LET SHA_K(59) = 2361852424
+LET SHA_K(60) = 2428436474
+LET SHA_K(61) = 2756734187
+LET SHA_K(62) = 3204031479
+LET SHA_K(63) = 3329325298
+
+SUB SHA256_RESET_H()
+  LET SHA_H(0) = 1779033703
+  LET SHA_H(1) = 3144134277
+  LET SHA_H(2) = 1013904242
+  LET SHA_H(3) = 2773480762
+  LET SHA_H(4) = 1359893119
+  LET SHA_H(5) = 2600822924
+  LET SHA_H(6) = 528734635
+  LET SHA_H(7) = 1541459225
+  RETURN 0
+END SUB
+
+REM Process one 64-byte block of BUF starting at offset off.
+SUB SHA256_PROCESS_BLOCK(off)
+  LOCAL i, j, t1, t2, a, b, c, d, e, f, g, h, ch, mj, s0, s1, ww0, ww1
+  FOR i = 0 TO 15
+    LET j = off + i * 4
+    LET SHA_W(i) = BITOR(BITOR(BITOR(SHL(BUF(j), 24), SHL(BUF(j+1), 16)), SHL(BUF(j+2), 8)), BUF(j+3))
+  NEXT i
+  FOR i = 16 TO 63
+    LET ww0 = SHA_W(i - 15)
+    LET ww1 = SHA_W(i - 2)
+    LET s0 = BITXOR(BITXOR(ROTR(ww0, 7), ROTR(ww0, 18)), SHR(ww0, 3))
+    LET s1 = BITXOR(BITXOR(ROTR(ww1, 17), ROTR(ww1, 19)), SHR(ww1, 10))
+    LET SHA_W(i) = ADD32(ADD32(ADD32(SHA_W(i - 16), s0), SHA_W(i - 7)), s1)
+  NEXT i
+  LET a = SHA_H(0)
+  LET b = SHA_H(1)
+  LET c = SHA_H(2)
+  LET d = SHA_H(3)
+  LET e = SHA_H(4)
+  LET f = SHA_H(5)
+  LET g = SHA_H(6)
+  LET h = SHA_H(7)
+  FOR i = 0 TO 63
+    LET s1 = BITXOR(BITXOR(ROTR(e, 6), ROTR(e, 11)), ROTR(e, 25))
+    LET ch = BITXOR(BITAND(e, f), BITAND(BITNOT(e), g))
+    LET t1 = ADD32(ADD32(ADD32(ADD32(h, s1), ch), SHA_K(i)), SHA_W(i))
+    LET s0 = BITXOR(BITXOR(ROTR(a, 2), ROTR(a, 13)), ROTR(a, 22))
+    LET mj = BITXOR(BITXOR(BITAND(a, b), BITAND(a, c)), BITAND(b, c))
+    LET t2 = ADD32(s0, mj)
+    LET h = g
+    LET g = f
+    LET f = e
+    LET e = ADD32(d, t1)
+    LET d = c
+    LET c = b
+    LET b = a
+    LET a = ADD32(t1, t2)
+  NEXT i
+  LET SHA_H(0) = ADD32(SHA_H(0), a)
+  LET SHA_H(1) = ADD32(SHA_H(1), b)
+  LET SHA_H(2) = ADD32(SHA_H(2), c)
+  LET SHA_H(3) = ADD32(SHA_H(3), d)
+  LET SHA_H(4) = ADD32(SHA_H(4), e)
+  LET SHA_H(5) = ADD32(SHA_H(5), f)
+  LET SHA_H(6) = ADD32(SHA_H(6), g)
+  LET SHA_H(7) = ADD32(SHA_H(7), h)
+  RETURN 0
+END SUB
+
+REM Compute SHA-256 of BUF(0..n-1). Pads in place, then writes 32-byte hash to BUF(0..31).
+REM Caller must ensure BUF has room for the padded message (n + 9 rounded up to multiple of 64).
+SUB SHA256_OF_BUF(n)
+  LOCAL pad_n, num_blocks, i, w
+  LET pad_n = INT((n + 9 + 63) / 64) * 64
+  LET BUF(n) = 128
+  FOR i = n + 1 TO pad_n - 9
+    LET BUF(i) = 0
+  NEXT i
+  FOR i = pad_n - 8 TO pad_n - 5
+    LET BUF(i) = 0
+  NEXT i
+  LET w = n * 8
+  LET BUF(pad_n - 4) = BITAND(SHR(w, 24), 255)
+  LET BUF(pad_n - 3) = BITAND(SHR(w, 16), 255)
+  LET BUF(pad_n - 2) = BITAND(SHR(w, 8), 255)
+  LET BUF(pad_n - 1) = BITAND(w, 255)
+  SHA256_RESET_H()
+  LET num_blocks = pad_n / 64
+  FOR i = 0 TO num_blocks - 1
+    SHA256_PROCESS_BLOCK(i * 64)
+  NEXT i
+  FOR i = 0 TO 7
+    LET w = SHA_H(i)
+    LET BUF(i*4)   = BITAND(SHR(w, 24), 255)
+    LET BUF(i*4+1) = BITAND(SHR(w, 16), 255)
+    LET BUF(i*4+2) = BITAND(SHR(w, 8), 255)
+    LET BUF(i*4+3) = BITAND(w, 255)
+  NEXT i
+  LET BUF_LEN = 32
+  RETURN 32
+END SUB
+
+SUB SHA256_OF_BUF$(n)
+  LET _ = SHA256_OF_BUF(n)
+  RETURN HEX_OF_BUF$(32)
+END SUB
+
+REM SHA-256 of a string (ASCII/byte-mode: char codes are taken as raw bytes).
+SUB SHA256$(s$)
+  LOCAL i, n
+  LET n = LEN(s$)
+  FOR i = 0 TO n - 1
+    LET BUF(i) = ASC(MID$(s$, i+1, 1))
+  NEXT i
+  LET BUF_LEN = n
+  RETURN SHA256_OF_BUF$(n)
 END SUB
 `;
