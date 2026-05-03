@@ -812,4 +812,216 @@ END SUB
 REM Initialize the prime / order constants once at stdlib load.
 BN_LOAD_HEX(BN_R_P, "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f")
 BN_LOAD_HEX(BN_R_N, "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+
+REM ===========================================================
+REM secp256k1 point arithmetic in Jacobian coordinates.
+REM Point P = (X, Y, Z) at three consecutive registers, affine = (X/Z^2, Y/Z^3).
+REM Z = 0 represents the point at infinity.
+REM
+REM Reserved scratch registers:
+REM   16..21 : PT1..PT6 used by POINT_DOUBLE / POINT_ADD / POINT_TO_AFFINE
+REM   22..24 : G in Jacobian (Z=1)
+REM   25..27 : SM_R (running result point during SCALAR_MULT_G_AFFINE)
+REM ===========================================================
+
+LET BN_R_PT1 = 16
+LET BN_R_PT2 = 17
+LET BN_R_PT3 = 18
+LET BN_R_PT4 = 19
+LET BN_R_PT5 = 20
+LET BN_R_PT6 = 21
+LET SECP_GX = 22
+LET SECP_GY = 23
+LET SECP_GZ = 24
+LET SM_RX = 25
+LET SM_RY = 26
+LET SM_RZ = 27
+
+REM Doubles Jacobian point at rSrc (X,Y,Z = rSrc, rSrc+1, rSrc+2) into rDst.
+REM Algorithm: standard formulas for y^2 = x^3 + 7.
+SUB POINT_DOUBLE(rDst, rSrc)
+  LOCAL rX1, rY1, rZ1, rXd, rYd, rZd
+  LET rX1 = rSrc
+  LET rY1 = rSrc + 1
+  LET rZ1 = rSrc + 2
+  LET rXd = rDst
+  LET rYd = rDst + 1
+  LET rZd = rDst + 2
+  REM If Z1 == 0 (infinity), result is infinity.
+  IF BN_IS_ZERO(rZ1) = 1 THEN
+    BN_ZERO(rXd)
+    BN_ZERO(rYd)
+    BN_ZERO(rZd)
+    RETURN 0
+  ENDIF
+  REM PT1 = A = X1^2
+  BN_MUL_MOD_P(BN_R_PT1, rX1, rX1)
+  REM PT2 = B = Y1^2
+  BN_MUL_MOD_P(BN_R_PT2, rY1, rY1)
+  REM PT3 = C = B^2
+  BN_MUL_MOD_P(BN_R_PT3, BN_R_PT2, BN_R_PT2)
+  REM PT4 = D = 2 * ((X1+B)^2 - A - C)
+  BN_ADD_MOD_P(BN_R_PT4, rX1, BN_R_PT2)
+  BN_MUL_MOD_P(BN_R_PT4, BN_R_PT4, BN_R_PT4)
+  BN_SUB_MOD_P(BN_R_PT4, BN_R_PT4, BN_R_PT1)
+  BN_SUB_MOD_P(BN_R_PT4, BN_R_PT4, BN_R_PT3)
+  BN_ADD_MOD_P(BN_R_PT4, BN_R_PT4, BN_R_PT4)
+  REM PT5 = E = 3*A
+  BN_ADD_MOD_P(BN_R_PT5, BN_R_PT1, BN_R_PT1)
+  BN_ADD_MOD_P(BN_R_PT5, BN_R_PT5, BN_R_PT1)
+  REM Z3 first (uses Y1, Z1 still intact)
+  BN_MUL_MOD_P(rZd, rY1, rZ1)
+  BN_ADD_MOD_P(rZd, rZd, rZd)
+  REM PT6 = F = E^2
+  BN_MUL_MOD_P(BN_R_PT6, BN_R_PT5, BN_R_PT5)
+  REM PT1 = 2D (reuse PT1 since A no longer needed)
+  BN_ADD_MOD_P(BN_R_PT1, BN_R_PT4, BN_R_PT4)
+  REM rXd_tmp = X3 = F - 2D -> stash in PT2 since rXd may equal rX1 (still might be needed by Y3 calc)
+  BN_SUB_MOD_P(BN_R_PT2, BN_R_PT6, BN_R_PT1)
+  REM Y3 = E*(D - X3) - 8*C
+  BN_SUB_MOD_P(BN_R_PT6, BN_R_PT4, BN_R_PT2)
+  BN_MUL_MOD_P(BN_R_PT6, BN_R_PT5, BN_R_PT6)
+  BN_ADD_MOD_P(BN_R_PT3, BN_R_PT3, BN_R_PT3)
+  BN_ADD_MOD_P(BN_R_PT3, BN_R_PT3, BN_R_PT3)
+  BN_ADD_MOD_P(BN_R_PT3, BN_R_PT3, BN_R_PT3)
+  BN_SUB_MOD_P(BN_R_PT6, BN_R_PT6, BN_R_PT3)
+  REM Now write final X3, Y3
+  BN_COPY(rXd, BN_R_PT2)
+  BN_COPY(rYd, BN_R_PT6)
+  RETURN 0
+END SUB
+
+REM Adds Jacobian points at rA and rB, into rDst.
+SUB POINT_ADD(rDst, rA, rB)
+  LOCAL rAX, rAY, rAZ, rBX, rBY, rBZ, rDX, rDY, rDZ
+  LET rAX = rA
+  LET rAY = rA + 1
+  LET rAZ = rA + 2
+  LET rBX = rB
+  LET rBY = rB + 1
+  LET rBZ = rB + 2
+  LET rDX = rDst
+  LET rDY = rDst + 1
+  LET rDZ = rDst + 2
+  REM Handle infinities
+  IF BN_IS_ZERO(rAZ) = 1 THEN
+    BN_COPY(rDX, rBX)
+    BN_COPY(rDY, rBY)
+    BN_COPY(rDZ, rBZ)
+    RETURN 0
+  ENDIF
+  IF BN_IS_ZERO(rBZ) = 1 THEN
+    BN_COPY(rDX, rAX)
+    BN_COPY(rDY, rAY)
+    BN_COPY(rDZ, rAZ)
+    RETURN 0
+  ENDIF
+  REM PT1 = Z2^2
+  BN_MUL_MOD_P(BN_R_PT1, rBZ, rBZ)
+  REM PT2 = U1 = X1 * Z2^2
+  BN_MUL_MOD_P(BN_R_PT2, rAX, BN_R_PT1)
+  REM PT3 = Z1^2
+  BN_MUL_MOD_P(BN_R_PT3, rAZ, rAZ)
+  REM PT4 = U2 = X2 * Z1^2
+  BN_MUL_MOD_P(BN_R_PT4, rBX, BN_R_PT3)
+  REM PT5 = Z2^3 = Z2 * Z2^2
+  BN_MUL_MOD_P(BN_R_PT5, rBZ, BN_R_PT1)
+  REM PT6 = S1 = Y1 * Z2^3
+  BN_MUL_MOD_P(BN_R_PT6, rAY, BN_R_PT5)
+  REM PT5 = Z1^3 = Z1 * Z1^2 (reuse)
+  BN_MUL_MOD_P(BN_R_PT5, rAZ, BN_R_PT3)
+  REM PT3 = S2 = Y2 * Z1^3 (reuse PT3)
+  BN_MUL_MOD_P(BN_R_PT3, rBY, BN_R_PT5)
+  REM PT1 = H = U2 - U1 (reuse PT1)
+  BN_SUB_MOD_P(BN_R_PT1, BN_R_PT4, BN_R_PT2)
+  REM PT5 = R = S2 - S1 (reuse PT5)
+  BN_SUB_MOD_P(BN_R_PT5, BN_R_PT3, BN_R_PT6)
+  REM Special cases when H == 0
+  IF BN_IS_ZERO(BN_R_PT1) = 1 THEN
+    IF BN_IS_ZERO(BN_R_PT5) = 1 THEN
+      POINT_DOUBLE(rDst, rA)
+    ELSE
+      BN_ZERO(rDX)
+      BN_ZERO(rDY)
+      BN_ZERO(rDZ)
+    ENDIF
+    RETURN 0
+  ENDIF
+  REM Compute Z3 = Z1*Z2*H first (uses Z1, Z2, H still intact)
+  BN_MUL_MOD_P(BN_R_PT4, rAZ, rBZ)
+  BN_MUL_MOD_P(rDZ, BN_R_PT4, BN_R_PT1)
+  REM PT3 = HH = H^2 (reuse PT3 since S2 no longer needed)
+  BN_MUL_MOD_P(BN_R_PT3, BN_R_PT1, BN_R_PT1)
+  REM PT4 = HHH = H * HH (reuse PT4)
+  BN_MUL_MOD_P(BN_R_PT4, BN_R_PT1, BN_R_PT3)
+  REM PT2 = U1*HH (overwrite U1 since not needed after this)
+  BN_MUL_MOD_P(BN_R_PT2, BN_R_PT2, BN_R_PT3)
+  REM Compute X3 = R^2 - HHH - 2*(U1*HH) into rDX (write at end after Y3 dependencies handled)
+  BN_MUL_MOD_P(BN_R_PT3, BN_R_PT5, BN_R_PT5)   ' R^2 -> PT3
+  BN_SUB_MOD_P(BN_R_PT3, BN_R_PT3, BN_R_PT4)   ' - HHH
+  BN_SUB_MOD_P(BN_R_PT3, BN_R_PT3, BN_R_PT2)   ' - U1*HH
+  BN_SUB_MOD_P(BN_R_PT3, BN_R_PT3, BN_R_PT2)   ' - U1*HH again
+  REM Y3 = R * (U1*HH - X3) - S1 * HHH
+  BN_SUB_MOD_P(BN_R_PT2, BN_R_PT2, BN_R_PT3)   ' U1*HH - X3 (PT2 reuse)
+  BN_MUL_MOD_P(BN_R_PT2, BN_R_PT5, BN_R_PT2)   ' R*(U1*HH-X3)
+  BN_MUL_MOD_P(BN_R_PT4, BN_R_PT6, BN_R_PT4)   ' S1*HHH
+  BN_SUB_MOD_P(BN_R_PT2, BN_R_PT2, BN_R_PT4)   ' Y3
+  REM Final writes
+  BN_COPY(rDX, BN_R_PT3)
+  BN_COPY(rDY, BN_R_PT2)
+  RETURN 0
+END SUB
+
+REM Convert Jacobian point at rJ (3 regs) to affine (rXout, rYout).
+REM Point at infinity yields (0, 0).
+SUB POINT_TO_AFFINE(rXout, rYout, rJ)
+  LOCAL rJX, rJY, rJZ
+  LET rJX = rJ
+  LET rJY = rJ + 1
+  LET rJZ = rJ + 2
+  IF BN_IS_ZERO(rJZ) = 1 THEN
+    BN_ZERO(rXout)
+    BN_ZERO(rYout)
+    RETURN 0
+  ENDIF
+  REM Z_inv -> PT1 (BN_INV_MOD_P uses BN_R_TMP_A/B internally, fine)
+  BN_INV_MOD_P(BN_R_PT1, rJZ)
+  REM PT2 = Z_inv^2
+  BN_MUL_MOD_P(BN_R_PT2, BN_R_PT1, BN_R_PT1)
+  REM PT3 = Z_inv^3
+  BN_MUL_MOD_P(BN_R_PT3, BN_R_PT1, BN_R_PT2)
+  REM x = X * Z_inv^2
+  BN_MUL_MOD_P(rXout, rJX, BN_R_PT2)
+  REM y = Y * Z_inv^3
+  BN_MUL_MOD_P(rYout, rJY, BN_R_PT3)
+  RETURN 0
+END SUB
+
+REM Compute scalar * G in affine coords. Uses 25..27 as running Jacobian point.
+SUB SCALAR_MULT_G_AFFINE(rXout, rYout, rk)
+  LOCAL i, j, b, bit, base
+  REM Init R = infinity
+  BN_ZERO(SM_RX)
+  BN_ZERO(SM_RY)
+  BN_ZERO(SM_RZ)
+  LET base = rk * 16
+  FOR i = 15 TO 0 STEP -1
+    LET b = BN(base + i)
+    FOR j = 15 TO 0 STEP -1
+      POINT_DOUBLE(SM_RX, SM_RX)
+      LET bit = BITAND(SHR(b, j), 1)
+      IF bit = 1 THEN
+        POINT_ADD(SM_RX, SM_RX, SECP_GX)
+      ENDIF
+    NEXT j
+  NEXT i
+  POINT_TO_AFFINE(rXout, rYout, SM_RX)
+  RETURN 0
+END SUB
+
+REM Initialize G's Jacobian coords (Z = 1) once at stdlib load.
+BN_LOAD_HEX(SECP_GX, "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798")
+BN_LOAD_HEX(SECP_GY, "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8")
+BN_ZERO(SECP_GZ)
+LET BN(SECP_GZ * 16) = 1
 `;
