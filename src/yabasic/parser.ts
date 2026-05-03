@@ -105,6 +105,9 @@ class Parser {
         case "RETURN":
           this.advance();
           return this.parseReturn();
+        case "LOCAL":
+          this.advance();
+          return this.parseLocal();
         case "END":
         case "STOP":
           this.advance();
@@ -239,6 +242,20 @@ class Parser {
   private parseReturn(): Stmt {
     if (this.atStmtEnd()) return { kind: "return", expr: null };
     return { kind: "return", expr: this.parseExpr() };
+  }
+
+  private parseLocal(): Stmt {
+    const names: { name: string; isString: boolean }[] = [];
+    while (true) {
+      const t = this.peek();
+      if (t.type !== "IDENT" && t.type !== "STRIDENT") {
+        throw new ParseError(t.line, t.col, "expected variable name in LOCAL");
+      }
+      this.advance();
+      names.push({ name: t.value, isString: t.type === "STRIDENT" });
+      if (!this.match("COMMA")) break;
+    }
+    return { kind: "local", names };
   }
 
   private parsePrint(): Stmt {

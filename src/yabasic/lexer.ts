@@ -49,6 +49,7 @@ const KEYWORDS = new Set([
   "DIM",
   "SUB",
   "RETURN",
+  "LOCAL",
 ]);
 
 export class LexError extends Error {

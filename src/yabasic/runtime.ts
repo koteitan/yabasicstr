@@ -1,6 +1,7 @@
 import type { Expr, Stmt, Param } from "./ast.js";
 import { tokenize } from "./lexer.js";
 import { parse } from "./parser.js";
+import { stdlib } from "./stdlib.js";
 
 export type Value = number | string;
 
@@ -23,10 +24,14 @@ class ReturnSignal {
 export interface RunOptions {
   io: IO;
   builtins?: Builtins;
+  /** Set false to skip auto-prepending the BASIC stdlib (mainly for interpreter unit tests). */
+  includeStdlib?: boolean;
 }
 
 export async function run(source: string, opts: RunOptions): Promise<void> {
-  const tokens = tokenize(source);
+  const includeStdlib = opts.includeStdlib !== false;
+  const fullSource = includeStdlib ? stdlib + "\n" + source : source;
+  const tokens = tokenize(fullSource);
   const program = parse(tokens);
   const interp = new Interpreter(opts.io, { ...defaultBuiltins, ...(opts.builtins ?? {}) });
   try {
@@ -209,6 +214,25 @@ class Interpreter {
         if (s.expr) v = await this.eval(s.expr);
         else v = "";
         throw new ReturnSignal(v);
+      }
+      case "local": {
+        const top = this.topFrame();
+        if (!top) {
+          // LOCAL at top-level acts as a no-op (just declares names as globals if missing).
+          for (const n of s.names) {
+            if (n.isString) {
+              if (!this.strVars.has(n.name)) this.strVars.set(n.name, "");
+            } else {
+              if (!this.numVars.has(n.name)) this.numVars.set(n.name, 0);
+            }
+          }
+          return;
+        }
+        for (const n of s.names) {
+          if (n.isString) top.strVars.set(n.name, "");
+          else top.numVars.set(n.name, 0);
+        }
+        return;
       }
       case "expr": {
         await this.eval(s.expr);

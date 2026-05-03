@@ -51,5 +51,6 @@ export type Stmt =
   | { kind: "repeat"; body: Stmt[]; cond: Expr }
   | { kind: "sub"; name: string; isString: boolean; params: Param[]; body: Stmt[] }
   | { kind: "return"; expr: Expr | null }
+  | { kind: "local"; names: Param[] }
   | { kind: "expr"; expr: Expr }
   | { kind: "end" };
