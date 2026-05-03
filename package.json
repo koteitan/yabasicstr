@@ -1,14 +1,16 @@
 {
   "name": "yabasicstr",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "yabasic-style BASIC interpreter on the web with built-in nostr signing",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -b --noEmit",
+    "test:build": "tsc -p tsconfig.test.json",
+    "test": "npm run test:build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "i18next": "^23.15.1",

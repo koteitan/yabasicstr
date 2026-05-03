@@ -1,7 +1,7 @@
 import { finalizeEvent, generateSecretKey, type EventTemplate } from "nostr-tools/pure";
 import { decode, nsecEncode } from "nostr-tools/nip19";
-import type { Builtins } from "./runtime";
-import { toNum, toStr, RuntimeError } from "./runtime";
+import type { Builtins } from "./runtime.js";
+import { toNum, toStr, RuntimeError } from "./runtime.js";
 
 function decodeNsec(nsec: string): Uint8Array {
   const trimmed = nsec.trim();

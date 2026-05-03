@@ -46,6 +46,9 @@ const KEYWORDS = new Set([
   "TRUE",
   "FALSE",
   "STOP",
+  "DIM",
+  "SUB",
+  "RETURN",
 ]);
 
 export class LexError extends Error {
