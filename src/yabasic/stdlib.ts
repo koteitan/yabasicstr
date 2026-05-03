@@ -411,4 +411,405 @@ SUB SHA256$(s$)
   LET BUF_LEN = n
   RETURN SHA256_OF_BUF$(n)
 END SUB
+
+REM ===========================================================
+REM 256-bit big-integer arithmetic.
+REM Numbers are represented as 16 little-endian limbs of 16 bits each.
+REM Register file: BN(r*16 .. r*16+15) for register r in 0..31.
+REM Wide products (512-bit) live in BN_WIDE(0..31).
+REM
+REM Reserved registers (loaded once at stdlib init):
+REM   28 = BN_R_P  : secp256k1 prime p
+REM   29 = BN_R_N  : secp256k1 group order n
+REM Other registers are scratch / user-allocated.
+REM ===========================================================
+
+DIM BN(512)
+DIM BN_WIDE(32)
+DIM BN_TMP1(16)
+DIM BN_TMP2(16)
+DIM BN_SHIFTED(32)
+
+LET BN_R_P = 28
+LET BN_R_N = 29
+LET BN_R_TMP_A = 30
+LET BN_R_TMP_B = 31
+
+REM Zero out a register.
+SUB BN_ZERO(r)
+  LOCAL i, base
+  LET base = r * 16
+  FOR i = 0 TO 15
+    LET BN(base + i) = 0
+  NEXT i
+  RETURN 0
+END SUB
+
+REM Copy register rsrc to rdst.
+SUB BN_COPY(rdst, rsrc)
+  LOCAL i, b1, b2
+  LET b1 = rdst * 16
+  LET b2 = rsrc * 16
+  FOR i = 0 TO 15
+    LET BN(b1 + i) = BN(b2 + i)
+  NEXT i
+  RETURN 0
+END SUB
+
+REM Compare BN registers as unsigned 256-bit integers. Returns -1, 0, or 1.
+SUB BN_CMP(ra, rb)
+  LOCAL i, ba, bb, va, vb
+  LET ba = ra * 16
+  LET bb = rb * 16
+  FOR i = 15 TO 0 STEP -1
+    LET va = BN(ba + i)
+    LET vb = BN(bb + i)
+    IF va < vb THEN RETURN -1
+    IF va > vb THEN RETURN 1
+  NEXT i
+  RETURN 0
+END SUB
+
+SUB BN_IS_ZERO(r)
+  LOCAL i, base
+  LET base = r * 16
+  FOR i = 0 TO 15
+    IF BN(base + i) <> 0 THEN RETURN 0
+  NEXT i
+  RETURN 1
+END SUB
+
+REM Load 64-char hex (BE) into register r.
+SUB BN_LOAD_HEX(r, hex$)
+  LOCAL i, base, hi, lo, byteIdx, limbIdx, byteVal
+  LET base = r * 16
+  REM Zero first
+  FOR i = 0 TO 15
+    LET BN(base + i) = 0
+  NEXT i
+  IF LEN(hex$) <> 64 THEN RETURN -1
+  REM bytes go BE: byte 0 is most significant of the 32-byte BE encoding.
+  REM byte b (0..31) lives at limb (31-b)/2; if (31-b) is even, it's the low byte of that limb.
+  FOR byteIdx = 0 TO 31
+    LET hi = HEX_NIBBLE(MID$(hex$, byteIdx*2 + 1, 1))
+    LET lo = HEX_NIBBLE(MID$(hex$, byteIdx*2 + 2, 1))
+    IF hi < 0 OR lo < 0 THEN RETURN -1
+    LET byteVal = SHL(hi, 4) + lo
+    LET limbIdx = INT((31 - byteIdx) / 2)
+    IF ((31 - byteIdx) MOD 2) = 0 THEN
+      LET BN(base + limbIdx) = BN(base + limbIdx) + byteVal
+    ELSE
+      LET BN(base + limbIdx) = BN(base + limbIdx) + byteVal * 256
+    ENDIF
+  NEXT byteIdx
+  RETURN 0
+END SUB
+
+SUB BN_TO_HEX$(r)
+  LOCAL i, base, limb, hi, lo, out$, byteIdx
+  LET base = r * 16
+  LET out$ = ""
+  REM Walk limbs from high (15) to low (0); within each limb output high byte then low byte.
+  FOR i = 15 TO 0 STEP -1
+    LET limb = BN(base + i)
+    LET hi = INT(limb / 256)
+    LET lo = limb - hi * 256
+    LET out$ = out$ + MID$(HEX_DIGITS$, INT(hi/16) + 1, 1) + MID$(HEX_DIGITS$, (hi MOD 16) + 1, 1)
+    LET out$ = out$ + MID$(HEX_DIGITS$, INT(lo/16) + 1, 1) + MID$(HEX_DIGITS$, (lo MOD 16) + 1, 1)
+  NEXT i
+  RETURN out$
+END SUB
+
+REM Load BUF(off..off+31) BE into register r.
+SUB BN_LOAD_BUF_BE(r, off)
+  LOCAL i, base, byteIdx, limbIdx
+  LET base = r * 16
+  FOR i = 0 TO 15
+    LET BN(base + i) = 0
+  NEXT i
+  FOR byteIdx = 0 TO 31
+    LET limbIdx = INT((31 - byteIdx) / 2)
+    IF ((31 - byteIdx) MOD 2) = 0 THEN
+      LET BN(base + limbIdx) = BN(base + limbIdx) + BUF(off + byteIdx)
+    ELSE
+      LET BN(base + limbIdx) = BN(base + limbIdx) + BUF(off + byteIdx) * 256
+    ENDIF
+  NEXT byteIdx
+  RETURN 0
+END SUB
+
+REM Store register r into BUF(off..off+31) BE.
+SUB BN_STORE_BUF_BE(r, off)
+  LOCAL i, base, limb, hi, lo
+  LET base = r * 16
+  FOR i = 0 TO 15
+    LET limb = BN(base + i)
+    LET hi = INT(limb / 256)
+    LET lo = limb - hi * 256
+    LET BUF(off + (31 - i*2 - 1)) = hi
+    LET BUF(off + (31 - i*2)) = lo
+  NEXT i
+  RETURN 0
+END SUB
+
+REM Add: rdst = (ra + rb) mod 2^256. Returns final carry (0 or 1).
+SUB BN_ADD(rdst, ra, rb)
+  LOCAL i, t, carry, bd, ba, bb
+  LET bd = rdst * 16
+  LET ba = ra * 16
+  LET bb = rb * 16
+  LET carry = 0
+  FOR i = 0 TO 15
+    LET t = BN(ba + i) + BN(bb + i) + carry
+    LET BN(bd + i) = BITAND(t, 65535)
+    LET carry = INT(t / 65536)
+  NEXT i
+  RETURN carry
+END SUB
+
+REM Subtract: rdst = (ra - rb) mod 2^256. Returns final borrow (0 or 1).
+SUB BN_SUB(rdst, ra, rb)
+  LOCAL i, t, borrow, bd, ba, bb
+  LET bd = rdst * 16
+  LET ba = ra * 16
+  LET bb = rb * 16
+  LET borrow = 0
+  FOR i = 0 TO 15
+    LET t = BN(ba + i) - BN(bb + i) - borrow
+    IF t < 0 THEN
+      LET t = t + 65536
+      LET borrow = 1
+    ELSE
+      LET borrow = 0
+    ENDIF
+    LET BN(bd + i) = t
+  NEXT i
+  RETURN borrow
+END SUB
+
+REM 512-bit product: BN_WIDE(0..31) = ra * rb. Schoolbook.
+SUB BN_MUL_WIDE(ra, rb)
+  LOCAL i, j, ba, bb, t, carry, ai
+  LET ba = ra * 16
+  LET bb = rb * 16
+  FOR i = 0 TO 31
+    LET BN_WIDE(i) = 0
+  NEXT i
+  FOR i = 0 TO 15
+    LET ai = BN(ba + i)
+    LET carry = 0
+    FOR j = 0 TO 15
+      LET t = BN_WIDE(i + j) + ai * BN(bb + j) + carry
+      LET BN_WIDE(i + j) = BITAND(t, 65535)
+      LET carry = INT(t / 65536)
+    NEXT j
+    LET BN_WIDE(i + 16) = carry
+  NEXT i
+  RETURN 0
+END SUB
+
+REM ----- Modular reductions -----
+
+REM Reduce BN_WIDE (32 limbs) mod p. Result -> register rdst.
+REM Uses the special form p = 2^256 - 2^32 - 977, so 2^256 = 2^32 + 977 (mod p).
+SUB BN_MOD_P_FROM_WIDE(rdst)
+  LOCAL i, t, carry, bd, hi_nonzero, iter, hi_top
+  LET bd = rdst * 16
+  REM Iterate up to 5 folds. After each, the high part shrinks rapidly.
+  FOR iter = 0 TO 4
+    REM Find highest nonzero limb above limb 15. If none, done with folding.
+    LET hi_top = -1
+    FOR i = 16 TO 31
+      IF BN_WIDE(i) <> 0 THEN LET hi_top = i - 16
+    NEXT i
+    IF hi_top < 0 THEN LET iter = 4
+    IF hi_top >= 0 THEN
+      REM Snapshot high half into BN_TMP1 and zero the high half.
+      FOR i = 0 TO hi_top
+        LET BN_TMP1(i) = BN_WIDE(16 + i)
+        LET BN_WIDE(16 + i) = 0
+      NEXT i
+      REM Add BN_TMP1 * 977 starting at limb 0. Each TMP1 limb * 977 fits in ~26 bits.
+      LET carry = 0
+      FOR i = 0 TO hi_top + 2
+        LET t = BN_WIDE(i) + carry
+        IF i <= hi_top THEN LET t = t + BN_TMP1(i) * 977
+        LET BN_WIDE(i) = BITAND(t, 65535)
+        LET carry = INT(t / 65536)
+      NEXT i
+      IF carry <> 0 THEN
+        LET BN_WIDE(hi_top + 3) = BN_WIDE(hi_top + 3) + carry
+      ENDIF
+      REM Add BN_TMP1 << 32 (i.e. shifted by 2 limbs) into BN_WIDE.
+      LET carry = 0
+      FOR i = 0 TO hi_top + 2
+        LET t = BN_WIDE(i + 2) + carry
+        IF i <= hi_top THEN LET t = t + BN_TMP1(i)
+        LET BN_WIDE(i + 2) = BITAND(t, 65535)
+        LET carry = INT(t / 65536)
+      NEXT i
+      IF carry <> 0 THEN
+        LET BN_WIDE(hi_top + 5) = BN_WIDE(hi_top + 5) + carry
+      ENDIF
+    ENDIF
+  NEXT iter
+  REM Copy low 16 limbs to rdst.
+  FOR i = 0 TO 15
+    LET BN(bd + i) = BN_WIDE(i)
+  NEXT i
+  REM Conditional subtract p while >= p (rare; at most a couple of times).
+  WHILE BN_CMP(rdst, BN_R_P) >= 0
+    LET _ = BN_SUB(rdst, rdst, BN_R_P)
+  WEND
+  RETURN 0
+END SUB
+
+REM Reduce BN_WIDE (32 limbs) mod n via binary long division.
+REM Uses BN_SHIFTED as a 32-limb register holding n shifted left.
+SUB BN_MOD_N_FROM_WIDE(rdst)
+  LOCAL i, j, k, bn, t, borrow, cmp
+  LET bn = BN_R_N * 16
+  REM Init BN_SHIFTED = n << 256 (place n in high half)
+  FOR i = 0 TO 15
+    LET BN_SHIFTED(i) = 0
+    LET BN_SHIFTED(i + 16) = BN(bn + i)
+  NEXT i
+
+  REM Iterate 257 times: if BN_WIDE >= BN_SHIFTED, subtract; then BN_SHIFTED >>= 1.
+  FOR k = 0 TO 256
+    REM Compare BN_WIDE vs BN_SHIFTED (32 limbs each, unsigned)
+    LET cmp = 0
+    FOR i = 31 TO 0 STEP -1
+      IF cmp = 0 THEN
+        IF BN_WIDE(i) > BN_SHIFTED(i) THEN LET cmp = 1
+        IF BN_WIDE(i) < BN_SHIFTED(i) THEN LET cmp = -1
+      ENDIF
+    NEXT i
+    IF cmp >= 0 THEN
+      REM BN_WIDE -= BN_SHIFTED
+      LET borrow = 0
+      FOR i = 0 TO 31
+        LET t = BN_WIDE(i) - BN_SHIFTED(i) - borrow
+        IF t < 0 THEN
+          LET t = t + 65536
+          LET borrow = 1
+        ELSE
+          LET borrow = 0
+        ENDIF
+        LET BN_WIDE(i) = t
+      NEXT i
+    ENDIF
+    REM BN_SHIFTED >>= 1
+    LET t = 0
+    FOR i = 31 TO 0 STEP -1
+      LET j = BN_SHIFTED(i)
+      LET BN_SHIFTED(i) = INT(j / 2) + t * 32768
+      LET t = j MOD 2
+    NEXT i
+  NEXT k
+  REM Copy low 16 limbs to rdst (high limbs are now 0)
+  LET bn = rdst * 16
+  FOR i = 0 TO 15
+    LET BN(bn + i) = BN_WIDE(i)
+  NEXT i
+  RETURN 0
+END SUB
+
+SUB BN_ADD_MOD_P(rdst, ra, rb)
+  LOCAL c
+  LET c = BN_ADD(rdst, ra, rb)
+  IF c <> 0 THEN
+    LET _ = BN_SUB(rdst, rdst, BN_R_P)
+  ELSE
+    IF BN_CMP(rdst, BN_R_P) >= 0 THEN
+      LET _ = BN_SUB(rdst, rdst, BN_R_P)
+    ENDIF
+  ENDIF
+  RETURN 0
+END SUB
+
+SUB BN_SUB_MOD_P(rdst, ra, rb)
+  LOCAL b
+  LET b = BN_SUB(rdst, ra, rb)
+  IF b <> 0 THEN
+    LET _ = BN_ADD(rdst, rdst, BN_R_P)
+  ENDIF
+  RETURN 0
+END SUB
+
+SUB BN_MUL_MOD_P(rdst, ra, rb)
+  BN_MUL_WIDE(ra, rb)
+  BN_MOD_P_FROM_WIDE(rdst)
+  RETURN 0
+END SUB
+
+SUB BN_ADD_MOD_N(rdst, ra, rb)
+  LOCAL c
+  LET c = BN_ADD(rdst, ra, rb)
+  IF c <> 0 THEN
+    LET _ = BN_SUB(rdst, rdst, BN_R_N)
+  ELSE
+    IF BN_CMP(rdst, BN_R_N) >= 0 THEN
+      LET _ = BN_SUB(rdst, rdst, BN_R_N)
+    ENDIF
+  ENDIF
+  RETURN 0
+END SUB
+
+SUB BN_SUB_MOD_N(rdst, ra, rb)
+  LOCAL b
+  LET b = BN_SUB(rdst, ra, rb)
+  IF b <> 0 THEN
+    LET _ = BN_ADD(rdst, rdst, BN_R_N)
+  ENDIF
+  RETURN 0
+END SUB
+
+SUB BN_MUL_MOD_N(rdst, ra, rb)
+  BN_MUL_WIDE(ra, rb)
+  BN_MOD_N_FROM_WIDE(rdst)
+  RETURN 0
+END SUB
+
+REM Compute base^exp mod p using square-and-multiply, with exp held in register rexp.
+REM rdst, rbase, rexp must be distinct from BN_R_TMP_A.
+SUB BN_POW_MOD_P(rdst, rbase, rexp)
+  LOCAL i, j, base_e, b
+  LET base_e = rexp * 16
+  REM result = 1
+  BN_ZERO(rdst)
+  LET BN(rdst*16) = 1
+  REM tmp = base
+  BN_COPY(BN_R_TMP_A, rbase)
+  REM Walk bits of exp from low to high
+  FOR i = 0 TO 15
+    LET b = BN(base_e + i)
+    FOR j = 0 TO 15
+      IF (b MOD 2) = 1 THEN
+        BN_MUL_MOD_P(rdst, rdst, BN_R_TMP_A)
+      ENDIF
+      LET b = INT(b / 2)
+      REM Square tmp (skip after the very last bit to save a multiplication)
+      IF i < 15 OR j < 15 THEN
+        BN_MUL_MOD_P(BN_R_TMP_A, BN_R_TMP_A, BN_R_TMP_A)
+      ENDIF
+    NEXT j
+  NEXT i
+  RETURN 0
+END SUB
+
+REM Modular inverse mod p via Fermat: a^(p-2) mod p.
+REM Uses BN_R_TMP_B to hold (p - 2). Caller must not pass BN_R_TMP_A or BN_R_TMP_B as arguments.
+SUB BN_INV_MOD_P(rdst, ra)
+  REM Compute p - 2 into BN_R_TMP_B
+  BN_ZERO(BN_R_TMP_B)
+  LET BN(BN_R_TMP_B*16) = 2
+  LET _ = BN_SUB(BN_R_TMP_B, BN_R_P, BN_R_TMP_B)
+  BN_POW_MOD_P(rdst, ra, BN_R_TMP_B)
+  RETURN 0
+END SUB
+
+REM Initialize the prime / order constants once at stdlib load.
+BN_LOAD_HEX(BN_R_P, "fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f")
+BN_LOAD_HEX(BN_R_N, "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
 `;
