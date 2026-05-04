@@ -1,7 +1,7 @@
 {
   "name": "yabasicstr",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "description": "yabasic-style BASIC interpreter on the web. nostr signing (NSEC bech32, SHA-256, secp256k1, BIP-340) is implemented in BASIC on top of bitwise primitives.",
   "scripts": {

@@ -17,6 +17,15 @@ PRINT SHA256$("abc")
   );
 });
 
+test("SHA256$ encodes UTF-8 (Japanese, accents) before hashing", async () => {
+  const samples = ["やべえ", "こんにちは、世界", "café", "naïve façade"];
+  for (const s of samples) {
+    const expected = createHash("sha256").update(Buffer.from(s, "utf-8")).digest("hex");
+    const out = await runBasic(`PRINT SHA256$("${s}")\n`);
+    assert.equal(out.trim(), expected, `mismatch for ${JSON.stringify(s)}`);
+  }
+});
+
 test("SHA256$ matches Node crypto for ASCII strings of varying length", async () => {
   const samples = [
     "",

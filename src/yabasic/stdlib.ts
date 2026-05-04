@@ -401,15 +401,36 @@ SUB SHA256_OF_BUF$(n)
   RETURN HEX_OF_BUF$(32)
 END SUB
 
-REM SHA-256 of a string (ASCII/byte-mode: char codes are taken as raw bytes).
+REM SHA-256 of a string. The string is encoded as UTF-8 (BMP code units) before hashing,
+REM so multibyte characters (Japanese etc.) produce the same digest as Node / browser
+REM utf8.encode + SHA-256.
+REM Surrogate pairs (code >= 0xD800) are passed through as-is per code unit, which is
+REM the same behavior as TextEncoder for unpaired surrogates being replaced with U+FFFD —
+REM we keep raw bytes for simplicity. Pair-combined astral chars are not handled here.
 SUB SHA256$(s$)
-  LOCAL i, n
+  LOCAL i, n, code, pos
   LET n = LEN(s$)
+  LET pos = 0
   FOR i = 0 TO n - 1
-    LET BUF(i) = ASC(MID$(s$, i+1, 1))
+    LET code = ASC(MID$(s$, i+1, 1))
+    IF code < 128 THEN
+      LET BUF(pos) = code
+      LET pos = pos + 1
+    ELSE
+      IF code < 2048 THEN
+        LET BUF(pos) = 192 + INT(code / 64)
+        LET BUF(pos + 1) = 128 + (code MOD 64)
+        LET pos = pos + 2
+      ELSE
+        LET BUF(pos) = 224 + INT(code / 4096)
+        LET BUF(pos + 1) = 128 + (INT(code / 64) MOD 64)
+        LET BUF(pos + 2) = 128 + (code MOD 64)
+        LET pos = pos + 3
+      ENDIF
+    ENDIF
   NEXT i
-  LET BUF_LEN = n
-  RETURN SHA256_OF_BUF$(n)
+  LET BUF_LEN = pos
+  RETURN SHA256_OF_BUF$(pos)
 END SUB
 
 REM ===========================================================
